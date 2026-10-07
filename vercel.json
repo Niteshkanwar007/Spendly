@@ -1,0 +1,5 @@
+{
+  "buildCommand": "pnpm exec expo export --platform web",
+  "outputDirectory": "dist",
+  "framework": null
+}
