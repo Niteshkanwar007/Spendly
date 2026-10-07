@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Spendly",
+    "slug": "spendly-expo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#f7f6f2"
+    },
+    "assetBundlePatterns": ["**/*"]
+  }
+}
