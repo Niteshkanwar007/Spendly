@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft,
   CalendarDays,
@@ -194,6 +194,44 @@ export default function Page() {
   const [selectedMonthKey, setSelectedMonthKey] = useState(currentMonthKey)
   const [reportMode, setReportMode] = useState<'monthly' | 'yearly'>('monthly')
   const [selectedYear, setSelectedYear] = useState(today.getFullYear())
+  const [reminderEnabled, setReminderEnabled] = useState(true)
+  const [reminderTime, setReminderTime] = useState('20:00')
+  const [isLoaded, setIsLoaded] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<Expense | null>(null)
+  const [formError, setFormError] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('spendly-preferences')
+      if (saved) {
+        const preferences = JSON.parse(saved) as { reminderEnabled?: boolean; reminderTime?: string }
+        if (typeof preferences.reminderEnabled === 'boolean') setReminderEnabled(preferences.reminderEnabled)
+        if (typeof preferences.reminderTime === 'string') setReminderTime(preferences.reminderTime)
+      }
+    } catch { /* Preferences are optional; keep defaults when storage is unavailable. */ }
+    setIsLoaded(true)
+  }, [])
+
+  useEffect(() => {
+    if (!isLoaded) return
+    window.localStorage.setItem('spendly-preferences', JSON.stringify({ reminderEnabled, reminderTime }))
+    if (!reminderEnabled || !('Notification' in window)) return
+    let timer: number | undefined
+    const [hours, minutes] = reminderTime.split(':').map(Number)
+    const schedule = () => {
+      const now = new Date()
+      const next = new Date(now)
+      next.setHours(hours, minutes, 0, 0)
+      if (next <= now) next.setDate(next.getDate() + 1)
+      timer = window.setTimeout(() => {
+        if (document.visibilityState !== 'visible' && Notification.permission === 'granted') new Notification('Spendly', { body: 'How much did you spend today?' })
+        schedule()
+      }, next.getTime() - now.getTime())
+    }
+    if (Notification.permission === 'granted') schedule()
+    return () => { if (timer) window.clearTimeout(timer) }
+  }, [isLoaded, reminderEnabled, reminderTime])
 
   const todayKey = dateKey(today)
   const todayStart = startOfDay(today)
@@ -224,11 +262,17 @@ export default function Page() {
 
   function saveExpense(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (isSaving) return
     const form = new FormData(event.currentTarget)
-    const amount = Number(form.get('amount'))
+    const rawAmount = String(form.get('amount') ?? '').trim()
+    const amount = Number(rawAmount)
     const description = String(form.get('description') ?? '').trim()
     const category = String(form.get('category') ?? '')
-    if (!amount || amount <= 0 || !description) return
+    if (!rawAmount) { setFormError('Enter an amount.'); return }
+    if (!Number.isFinite(amount) || amount <= 0) { setFormError('Amount must be greater than ₹0.'); return }
+    if (!description) { setFormError('Enter what you spent the money on.'); return }
+    setFormError('')
+    setIsSaving(true)
 
     const expense: Expense = {
       id: editing?.id ?? Date.now(),
@@ -238,6 +282,7 @@ export default function Page() {
       expenseDate: editing?.expenseDate ?? todayKey,
     }
     setExpenses((current) => editing ? current.map((item) => item.id === editing.id ? expense : item) : [expense, ...current])
+    window.setTimeout(() => setIsSaving(false), 150)
     setEditing(null)
     setShowForm(false)
     setActiveTab('today')
@@ -248,9 +293,8 @@ export default function Page() {
     setShowForm(true)
   }
 
-  function deleteExpense(id: number) {
-    setExpenses((current) => current.filter((expense) => expense.id !== id))
-    setSelectedDate(null)
+  function requestDelete(expense: Expense) {
+    setDeleteTarget(expense)
   }
 
   return (
@@ -288,7 +332,7 @@ export default function Page() {
               </section>
               {weekComparison && <p className={`comparison ${weekComparison.difference >= 0 ? 'up' : 'down'}`}>{weekComparison.difference >= 0 ? '↑' : '↓'} {Math.abs(weekComparison.percentage).toFixed(0)}% from last week</p>}
               <div className="section-heading"><h3>Today&apos;s expenses</h3><span>{todayExpenses.length} {todayExpenses.length === 1 ? 'entry' : 'entries'}</span></div>
-              {todayExpenses.length === 0 ? <EmptyState onAdd={() => setShowForm(true)} /> : <ExpenseList expenses={todayExpenses} onEdit={openEdit} onDelete={deleteExpense} />}
+              {todayExpenses.length === 0 ? <EmptyState onAdd={() => setShowForm(true)} /> : <ExpenseList expenses={todayExpenses} onEdit={openEdit} onDelete={requestDelete} />}
             </>
           )}
 
@@ -301,7 +345,9 @@ export default function Page() {
 
           {activeTab === 'reports' && <ReportsView mode={reportMode} onModeChange={setReportMode} expenses={expenses} selectedMonthKey={selectedMonthKey} currentMonthKey={currentMonthKey} today={today} onMonthChange={setSelectedMonthKey} selectedYear={selectedYear} onYearChange={setSelectedYear} onAdd={() => setShowForm(true)} />}
 
-          {activeTab === 'settings' && <SettingsView />}
+          {activeTab === 'settings' && <SettingsView enabled={reminderEnabled} time={reminderTime} onEnabledChange={setReminderEnabled} onTimeChange={setReminderTime} />}
+
+          {deleteTarget && <ConfirmDelete expense={deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={() => { setExpenses((current) => current.filter((item) => item.id !== deleteTarget.id)); setDeleteTarget(null); setSelectedDate(null) }} />}
         </section>
 
         <button className="add-button" onClick={() => { setEditing(null); setShowForm(true) }}><Plus aria-hidden="true" /> Add expense</button>
@@ -310,8 +356,8 @@ export default function Page() {
         </nav>
       </div>
 
-      {showForm && <ExpenseForm editing={editing} onClose={() => { setShowForm(false); setEditing(null) }} onSave={saveExpense} />}
-      {selectedDate && <DateDetails date={selectedDate} expenses={expenses.filter((expense) => expense.expenseDate === selectedDate)} onClose={() => setSelectedDate(null)} onEdit={openEdit} onDelete={deleteExpense} />}
+      {showForm && <ExpenseForm editing={editing} error={formError} isSaving={isSaving} onClose={() => { setShowForm(false); setEditing(null); setFormError('') }} onSave={saveExpense} />}
+      {selectedDate && <DateDetails date={selectedDate} expenses={expenses.filter((expense) => expense.expenseDate === selectedDate)} onClose={() => setSelectedDate(null)} onEdit={openEdit} onDelete={requestDelete} />}
     </main>
   )
 }
@@ -320,16 +366,16 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   return <div className="empty-state"><div className="empty-icon"><Receipt aria-hidden="true" /></div><h3>Nothing recorded yet</h3><p>Keep your first entry simple. Add an expense as you go.</p><button className="text-button" onClick={onAdd}>Add your first expense <ChevronRight aria-hidden="true" /></button></div>
 }
 
-function ExpenseList({ expenses, onEdit, onDelete }: { expenses: Expense[]; onEdit: (expense: Expense) => void; onDelete: (id: number) => void }) {
-  return <div className="expense-list">{expenses.map((expense) => <article className="expense-row" key={expense.id}><div className="expense-symbol"><Receipt aria-hidden="true" /></div><div className="expense-copy"><strong>{expense.description}</strong>{expense.category && <span>{expense.category}</span>}</div><div className="expense-actions"><strong>{currency(expense.amount)}</strong><button aria-label={`Edit ${expense.description}`} onClick={() => onEdit(expense)}><Edit3 aria-hidden="true" /></button><button aria-label={`Delete ${expense.description}`} onClick={() => onDelete(expense.id)}><Trash2 aria-hidden="true" /></button></div></article>)}</div>
+function ExpenseList({ expenses, onEdit, onDelete }: { expenses: Expense[]; onEdit: (expense: Expense) => void; onDelete: (expense: Expense) => void }) {
+  return <div className="expense-list">{expenses.map((expense) => <article className="expense-row" key={expense.id}><div className="expense-symbol"><Receipt aria-hidden="true" /></div><div className="expense-copy"><strong>{expense.description}</strong>{expense.category && <span>{expense.category}</span>}</div><div className="expense-actions"><strong>{currency(expense.amount)}</strong><button aria-label={`Edit ${expense.description}`} onClick={() => onEdit(expense)}><Edit3 aria-hidden="true" /></button><button aria-label={`Delete ${expense.description}`} onClick={() => onDelete(expense)}><Trash2 aria-hidden="true" /></button></div></article>)}</div>
 }
 
 function DateGroup({ date, expenses, onOpen }: { date: string; expenses: Expense[]; onOpen: () => void }) {
   return <button className="date-group" onClick={onOpen}><div className="date-group-heading"><div><p>{new Intl.DateTimeFormat('en-IN', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(`${date}T12:00:00`))}</p><span>{expenses.length} {expenses.length === 1 ? 'expense' : 'expenses'}</span></div><strong>{currency(expenses.reduce((sum, item) => sum + item.amount, 0))}</strong><ChevronRight aria-hidden="true" /></div>{expenses.slice(0, 3).map((expense) => <div className="mini-expense" key={expense.id}><span>{expense.description}</span><strong>{currency(expense.amount)}</strong></div>)}</button>
 }
 
-function ExpenseForm({ editing, onClose, onSave }: { editing: Expense | null; onClose: () => void; onSave: (event: React.FormEvent<HTMLFormElement>) => void }) {
-  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="expense-title"><div className="modal-heading"><div><p className="eyebrow">{editing ? 'UPDATE ENTRY' : 'NEW ENTRY'}</p><h2 id="expense-title">{editing ? 'Edit expense' : 'Add expense'}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden="true" /></button></div><form onSubmit={onSave}><label>Amount<div className="amount-input"><span>₹</span><input name="amount" type="number" min="1" step="0.01" defaultValue={editing?.amount} placeholder="0" required autoFocus /></div></label><label>What did you spend it on?<input name="description" defaultValue={editing?.description} placeholder="e.g. Lunch, cab, groceries" required /></label><label>Category <span className="optional">Optional</span><select name="category" defaultValue={editing?.category ?? ''}><option value="">Choose a category</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><p className="date-note"><CalendarDays aria-hidden="true" /> {editing ? 'Recorded on ' : 'Automatically recorded for '}{new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${editing?.expenseDate ?? dateKey(new Date())}T12:00:00`))}</p><button className="save-button" type="submit"><Check aria-hidden="true" /> {editing ? 'Save changes' : 'Save expense'}</button></form></section></div>
+function ExpenseForm({ editing, error, isSaving, onClose, onSave }: { editing: Expense | null; error: string; isSaving: boolean; onClose: () => void; onSave: (event: React.FormEvent<HTMLFormElement>) => void }) {
+  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="expense-title"><div className="modal-heading"><div><p className="eyebrow">{editing ? 'UPDATE ENTRY' : 'NEW ENTRY'}</p><h2 id="expense-title">{editing ? 'Edit expense' : 'Add expense'}</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X aria-hidden="true" /></button></div><form onSubmit={onSave} noValidate><label>Amount<div className="amount-input"><span>₹</span><input name="amount" type="number" min="0.01" step="0.01" defaultValue={editing?.amount} placeholder="0" inputMode="decimal" aria-invalid={Boolean(error)} autoFocus /></div></label><label>What did you spend it on?<input name="description" defaultValue={editing?.description} placeholder="e.g. Lunch, cab, groceries" aria-invalid={Boolean(error)} /></label><label>Category <span className="optional">Optional</span><select name="category" defaultValue={editing?.category ?? ''}><option value="">Choose a category</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<p className="date-note"><CalendarDays aria-hidden="true" /> {editing ? 'Recorded on ' : 'Automatically recorded for '}{new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${editing?.expenseDate ?? dateKey(new Date())}T12:00:00`))}</p><button className="save-button" type="submit" disabled={isSaving}><Check aria-hidden="true" /> {isSaving ? 'Saving…' : editing ? 'Save changes' : 'Save expense'}</button></form></section></div>
 }
 
 function DateDetails({ date, expenses, onClose, onEdit, onDelete }: { date: string; expenses: Expense[]; onClose: () => void; onEdit: (expense: Expense) => void; onDelete: (id: number) => void }) {
@@ -395,4 +441,14 @@ function WeeklyReport({ currentWeek, previousWeek, dailyAverage, comparison, hig
     {currentWeek.count === 0 && <button className="outline-button" onClick={onAdd}><Plus aria-hidden="true" /> Record an expense</button>}
   </div>
 }
-function SettingsView() { return <div className="settings-view"><div className="page-heading"><p className="eyebrow">PREFERENCES</p><h2>Settings</h2><p className="subheading">Keep Spendly working your way.</p></div><div className="settings-card"><div><span>Currency</span><small>Used for all amounts</small></div><strong>INR (₹)</strong></div><div className="settings-card"><div><span>Notifications</span><small>Daily reminders</small></div><span className="coming-soon">Coming soon</span></div><div className="settings-card"><div><span>First day of week</span><small>Used for future reports</small></div><strong>Monday</strong></div><div className="about-card"><CircleHelp aria-hidden="true" /><div><strong>About Spendly</strong><p>A quiet, simple place to keep track of what you spend.</p><small>Version 1.0</small></div></div></div> }
+function SettingsView({ enabled, time, onEnabledChange, onTimeChange }: { enabled: boolean; time: string; onEnabledChange: (enabled: boolean) => void; onTimeChange: (time: string) => void }) {
+  async function enableReminder(next: boolean) {
+    if (next && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission()
+    onEnabledChange(next)
+  }
+  return <div className="settings-view"><div className="page-heading"><p className="eyebrow">PREFERENCES</p><h2>Settings</h2><p className="subheading">Keep Spendly working your way.</p></div><div className="settings-card"><div><span>Currency</span><small>Used for all amounts</small></div><strong>INR (₹)</strong></div><div className="settings-card reminder-setting"><div><span>Daily reminder</span><small>Ask how much you spent today</small></div><label className="switch-label"><input type="checkbox" checked={enabled} onChange={(event) => enableReminder(event.target.checked)} /><span className="switch" aria-hidden="true" /></label></div><div className="settings-card"><div><span>Reminder time</span><small>One local notification each day</small></div><input className="time-input" type="time" value={time} onChange={(event) => onTimeChange(event.target.value)} disabled={!enabled} aria-label="Reminder time" /></div><div className="settings-card"><div><span>First day of week</span><small>Used for future reports</small></div><strong>Monday</strong></div><div className="about-card"><CircleHelp aria-hidden="true" /><div><strong>About Spendly</strong><p>A quiet, simple place to keep track of what you spend.</p><small>Version 1.0</small></div></div></div>
+}
+
+function ConfirmDelete({ expense, onCancel, onConfirm }: { expense: Expense; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><div className="modal-heading"><div><p className="eyebrow">REMOVE ENTRY</p><h2 id="delete-title">Delete this expense?</h2></div></div><p className="subheading">{expense.description} · {currency(expense.amount)}</p><div className="confirm-actions"><button className="outline-button" onClick={onCancel}>Cancel</button><button className="delete-button" onClick={onConfirm}>Delete</button></div></section></div>
+}
