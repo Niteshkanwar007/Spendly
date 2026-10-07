@@ -45,6 +45,37 @@ const dateKey = (date: Date) => {
 const readableDate = (date: Date) =>
   new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric', year: 'numeric' }).format(date)
 
+const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate())
+const addDays = (date: Date, days: number) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days)
+const startOfWeek = (date: Date, firstDay = 1) => {
+  const day = date.getDay()
+  const offset = (day - firstDay + 7) % 7
+  return addDays(startOfDay(date), -offset)
+}
+
+function calculatePeriod(expenses: Expense[], start: Date, endExclusive: Date) {
+  const startKey = dateKey(start)
+  const endKey = dateKey(endExclusive)
+  const items = expenses.filter((expense) => expense.expenseDate >= startKey && expense.expenseDate < endKey)
+  const total = items.reduce((sum, expense) => sum + expense.amount, 0)
+  return { items, total, count: items.length, averageExpense: items.length ? total / items.length : 0 }
+}
+
+function compareWeeks(currentTotal: number, previousTotal: number) {
+  if (previousTotal === 0) return null
+  const difference = currentTotal - previousTotal
+  return { difference, percentage: (difference / previousTotal) * 100 }
+}
+
+function getWeekDayTotals(expenses: Expense[], weekStart: Date) {
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = addDays(weekStart, index)
+    const key = dateKey(date)
+    const total = expenses.filter((expense) => expense.expenseDate === key).reduce((sum, expense) => sum + expense.amount, 0)
+    return { date, total }
+  })
+}
+
 export default function Page() {
   const [activeTab, setActiveTab] = useState<Tab>('today')
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses)
@@ -54,8 +85,25 @@ export default function Page() {
 
   const today = new Date()
   const todayKey = dateKey(today)
-  const todayExpenses = expenses.filter((expense) => expense.expenseDate === todayKey)
-  const todayTotal = todayExpenses.reduce((sum, expense) => sum + expense.amount, 0)
+  const todayStart = startOfDay(today)
+  const tomorrowStart = addDays(todayStart, 1)
+  const yesterdayStart = addDays(todayStart, -1)
+  const currentWeekStart = startOfWeek(today)
+  const currentWeekEnd = addDays(currentWeekStart, 7)
+  const previousWeekStart = addDays(currentWeekStart, -7)
+  const todayPeriod = calculatePeriod(expenses, todayStart, tomorrowStart)
+  const yesterdayPeriod = calculatePeriod(expenses, yesterdayStart, todayStart)
+  const currentWeek = calculatePeriod(expenses, currentWeekStart, currentWeekEnd)
+  const previousWeek = calculatePeriod(expenses, previousWeekStart, currentWeekStart)
+  const elapsedDays = Math.floor((todayStart.getTime() - currentWeekStart.getTime()) / 86400000) + 1
+  const dailyAverage = currentWeek.total / elapsedDays
+  const weekComparison = compareWeeks(currentWeek.total, previousWeek.total)
+  const weekDayTotals = getWeekDayTotals(expenses, currentWeekStart)
+  const spendingDays = weekDayTotals.filter((day) => day.total > 0)
+  const highestDay = spendingDays.length ? spendingDays.reduce((highest, day) => day.total > highest.total ? day : highest) : null
+  const lowestDay = spendingDays.length ? spendingDays.reduce((lowest, day) => day.total < lowest.total ? day : lowest) : null
+  const todayExpenses = todayPeriod.items
+  const todayTotal = todayPeriod.total
 
   const groupedExpenses = useMemo(() => {
     const groups = new Map<string, Expense[]>()
@@ -123,6 +171,11 @@ export default function Page() {
                 </div>
                 <div className="total-icon"><Receipt aria-hidden="true" /></div>
               </section>
+              <section className="metric-grid" aria-label="Spending summary">
+                <div className="metric-card"><span>This week</span><strong>{currency(currentWeek.total)}</strong></div>
+                <div className="metric-card"><span>Daily average</span><strong>{currency(dailyAverage)}</strong></div>
+              </section>
+              {weekComparison && <p className={`comparison ${weekComparison.difference >= 0 ? 'up' : 'down'}`}>{weekComparison.difference >= 0 ? '↑' : '↓'} {Math.abs(weekComparison.percentage).toFixed(0)}% from last week</p>}
               <div className="section-heading"><h3>Today&apos;s expenses</h3><span>{todayExpenses.length} {todayExpenses.length === 1 ? 'entry' : 'entries'}</span></div>
               {todayExpenses.length === 0 ? <EmptyState onAdd={() => setShowForm(true)} /> : <ExpenseList expenses={todayExpenses} onEdit={openEdit} onDelete={deleteExpense} />}
             </>
@@ -135,7 +188,7 @@ export default function Page() {
             </>
           )}
 
-          {activeTab === 'reports' && <EmptyReport onAdd={() => setShowForm(true)} hasExpenses={expenses.length > 0} />}
+          {activeTab === 'reports' && <WeeklyReport currentWeek={currentWeek} previousWeek={previousWeek} dailyAverage={dailyAverage} comparison={weekComparison} highestDay={highestDay} lowestDay={lowestDay} onAdd={() => setShowForm(true)} />}
 
           {activeTab === 'settings' && <SettingsView />}
         </section>
@@ -172,5 +225,15 @@ function DateDetails({ date, expenses, onClose, onEdit, onDelete }: { date: stri
   return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="date-title"><div className="modal-heading"><div><p className="eyebrow">EXPENSES</p><h2 id="date-title">{new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${date}T12:00:00`))}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden="true" /></button></div><ExpenseList expenses={expenses} onEdit={(expense) => { onClose(); onEdit(expense) }} onDelete={onDelete} /></section></div>
 }
 
-function EmptyReport({ onAdd, hasExpenses }: { onAdd: () => void; hasExpenses: boolean }) { return <div className="report-empty"><div className="report-orb"><PieChart aria-hidden="true" /></div><p className="eyebrow">REPORTS</p><h2>Your spending, simply understood.</h2><p>{hasExpenses ? 'Reports will appear here as the calculation engine is added.' : 'Your spending report will appear here as you record expenses.'}</p><button className="outline-button" onClick={onAdd}><Plus aria-hidden="true" /> Record an expense</button></div> }
+function WeeklyReport({ currentWeek, previousWeek, dailyAverage, comparison, highestDay, lowestDay, onAdd }: { currentWeek: ReturnType<typeof calculatePeriod>; previousWeek: ReturnType<typeof calculatePeriod>; dailyAverage: number; comparison: ReturnType<typeof compareWeeks>; highestDay: { date: Date; total: number } | null; lowestDay: { date: Date; total: number } | null; onAdd: () => void }) {
+  const formatDay = (date: Date) => new Intl.DateTimeFormat('en-IN', { weekday: 'long' }).format(date)
+  return <div className="report-view">
+    <div className="page-heading"><p className="eyebrow">REPORTS</p><h2>This week</h2><p className="subheading">Monday through Sunday, calculated from your expenses.</p></div>
+    <div className="report-total"><span>Weekly spending</span><strong>{currency(currentWeek.total)}</strong><small>{currentWeek.count} {currentWeek.count === 1 ? 'expense' : 'expenses'}</small></div>
+    <div className="report-metrics"><div><span>Daily average</span><strong>{currency(dailyAverage)}</strong></div><div><span>Previous week</span><strong>{currency(previousWeek.total)}</strong></div><div><span>Average expense</span><strong>{currency(currentWeek.averageExpense)}</strong></div></div>
+    {comparison ? <div className="comparison-card"><strong>{comparison.difference >= 0 ? '↑' : '↓'} {currency(Math.abs(comparison.difference))}</strong><span>{Math.abs(comparison.percentage).toFixed(0)}% {comparison.difference >= 0 ? 'more' : 'less'} than last week</span></div> : <div className="comparison-card"><strong>No previous spending data</strong><span>Add expenses next week to compare.</span></div>}
+    <div className="day-highlights"><div><span>Highest spending day</span><strong>{highestDay ? `${formatDay(highestDay.date)} · ${currency(highestDay.total)}` : 'No spending yet'}</strong></div><div><span>Lowest spending day</span><strong>{lowestDay ? `${formatDay(lowestDay.date)} · ${currency(lowestDay.total)}` : 'No spending yet'}</strong></div></div>
+    {currentWeek.count === 0 && <button className="outline-button" onClick={onAdd}><Plus aria-hidden="true" /> Record an expense</button>}
+  </div>
+}
 function SettingsView() { return <div className="settings-view"><div className="page-heading"><p className="eyebrow">PREFERENCES</p><h2>Settings</h2><p className="subheading">Keep Spendly working your way.</p></div><div className="settings-card"><div><span>Currency</span><small>Used for all amounts</small></div><strong>INR (₹)</strong></div><div className="settings-card"><div><span>Notifications</span><small>Daily reminders</small></div><span className="coming-soon">Coming soon</span></div><div className="settings-card"><div><span>First day of week</span><small>Used for future reports</small></div><strong>Monday</strong></div><div className="about-card"><CircleHelp aria-hidden="true" /><div><strong>About Spendly</strong><p>A quiet, simple place to keep track of what you spend.</p><small>Version 1.0</small></div></div></div> }
