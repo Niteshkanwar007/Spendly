@@ -14,6 +14,7 @@ import {
   PieChart,
   Plus,
   Receipt,
+  Search,
   Settings,
   Trash2,
   WalletCards,
@@ -27,6 +28,22 @@ type Expense = {
   description: string
   category?: string
   expenseDate: string
+}
+type ExpenseDraft = { id: string; description: string; amount: number }
+
+function parseQuickExpenses(input: string): { drafts: ExpenseDraft[]; error: string } {
+  const entries = input.replace(/\r/g, '').split(/[\n,]+/).map((entry) => entry.trim()).filter(Boolean)
+  const drafts: ExpenseDraft[] = []
+  for (const entry of entries) {
+    const match = entry.match(/^(.*?)(?:\s*[-–—:]?\s*)(\d+(?:\.\d{1,2})?)\s*$/)
+    if (!match) return { drafts: [], error: `Could not read “${entry}”. Use a format like Lunch 250.` }
+    const description = match[1].replace(/[\s-–—:]+$/, '').trim()
+    const amount = Number(match[2])
+    if (!description) return { drafts: [], error: 'Each expense needs a description.' }
+    if (!Number.isFinite(amount) || amount <= 0) return { drafts: [], error: 'Amounts must be greater than ₹0.' }
+    drafts.push({ id: `${description}-${amount}-${drafts.length}`, description, amount })
+  }
+  return drafts.length ? { drafts, error: '' } : { drafts: [], error: 'Enter at least one expense.' }
 }
 
 const categories = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Health', 'Travel', 'Other']
@@ -200,6 +217,13 @@ export default function Page() {
   const [deleteTarget, setDeleteTarget] = useState<Expense | null>(null)
   const [formError, setFormError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [quickMode, setQuickMode] = useState(false)
+  const [quickText, setQuickText] = useState('')
+  const [quickReview, setQuickReview] = useState<ExpenseDraft[] | null>(null)
+  const [historyYear, setHistoryYear] = useState('all')
+  const [historyMonth, setHistoryMonth] = useState('all')
+  const [historyCategory, setHistoryCategory] = useState('all')
+  const [historySearch, setHistorySearch] = useState('')
 
   useEffect(() => {
     try {
@@ -297,6 +321,37 @@ export default function Page() {
     setDeleteTarget(expense)
   }
 
+  function reviewQuickEntry() {
+    const result = parseQuickExpenses(quickText)
+    if (result.error) { setFormError(result.error); return }
+    setFormError('')
+    setQuickReview(result.drafts)
+  }
+
+  function saveQuickEntry() {
+    if (!quickReview?.length || isSaving) return
+    setIsSaving(true)
+    const created = quickReview.map((draft, index) => ({ id: Date.now() + index, amount: draft.amount, description: draft.description.trim(), expenseDate: todayKey }))
+    setExpenses((current) => [...created, ...current])
+    window.setTimeout(() => setIsSaving(false), 150)
+    setQuickReview(null)
+    setQuickText('')
+    setQuickMode(false)
+    setFormError('')
+    setActiveTab('today')
+  }
+
+  const historyExpenses = expenses.filter((expense) => {
+    const [year, month] = expense.expenseDate.split('-')
+    const matchesYear = historyYear === 'all' || year === historyYear
+    const matchesMonth = historyMonth === 'all' || month === historyMonth
+    const matchesCategory = historyCategory === 'all' || (expense.category || 'Other') === historyCategory
+    const matchesSearch = !historySearch.trim() || normalizedDescription(expense.description).includes(normalizedDescription(historySearch))
+    return matchesYear && matchesMonth && matchesCategory && matchesSearch
+  })
+  const filteredGroups = [...new Set(historyExpenses.map((expense) => expense.expenseDate))].sort((a, b) => b.localeCompare(a)).map((date) => [date, historyExpenses.filter((expense) => expense.expenseDate === date)] as [string, Expense[]])
+  const historyTotal = historyExpenses.reduce((sum, expense) => sum + expense.amount, 0)
+
   return (
     <main className="app-shell">
       <div className="app-frame">
@@ -339,7 +394,9 @@ export default function Page() {
           {activeTab === 'history' && (
             <>
               <div className="page-heading"><p className="eyebrow">YOUR RECORDS</p><h2>History</h2><p className="subheading">Every expense, organized by day.</p></div>
-              {groupedExpenses.length === 0 ? <EmptyState onAdd={() => setShowForm(true)} /> : groupedExpenses.map(([date, items]) => <DateGroup key={date} date={date} expenses={items} onOpen={() => setSelectedDate(date)} />)}
+              <div className="history-filters"><label className="search-field"><Search aria-hidden="true" /><input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Search expenses" aria-label="Search expenses" /></label><div className="filter-row"><select value={historyYear} onChange={(event) => setHistoryYear(event.target.value)} aria-label="Filter by year"><option value="all">All years</option>{[...new Set(expenses.map((expense) => expense.expenseDate.slice(0, 4)))].sort().reverse().map((year) => <option key={year}>{year}</option>)}</select><select value={historyMonth} onChange={(event) => setHistoryMonth(event.target.value)} aria-label="Filter by month"><option value="all">All months</option>{Array.from({ length: 12 }, (_, index) => <option key={index} value={String(index + 1).padStart(2, '0')}>{new Intl.DateTimeFormat('en-IN', { month: 'long' }).format(new Date(2026, index, 1))}</option>)}</select><select value={historyCategory} onChange={(event) => setHistoryCategory(event.target.value)} aria-label="Filter by category"><option value="all">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></div></div>
+              <div className="history-total"><span>{historyExpenses.length} matching {historyExpenses.length === 1 ? 'expense' : 'expenses'}</span><strong>{currency(historyTotal)}</strong></div>
+              {filteredGroups.length === 0 ? <EmptyState onAdd={() => setShowForm(true)} /> : filteredGroups.map(([date, items]) => <DateGroup key={date} date={date} expenses={items} onOpen={() => setSelectedDate(date)} />)}
             </>
           )}
 
@@ -350,12 +407,13 @@ export default function Page() {
           {deleteTarget && <ConfirmDelete expense={deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={() => { setExpenses((current) => current.filter((item) => item.id !== deleteTarget.id)); setDeleteTarget(null); setSelectedDate(null) }} />}
         </section>
 
-        <button className="add-button" onClick={() => { setEditing(null); setShowForm(true) }}><Plus aria-hidden="true" /> Add expense</button>
+        <div className="action-buttons"><button className="quick-button" onClick={() => { setQuickMode(true); setFormError('') }}>Quick entry</button><button className="add-button" onClick={() => { setEditing(null); setShowForm(true) }}><Plus aria-hidden="true" /> Add expense</button></div>
         <nav className="bottom-nav" aria-label="Main navigation">
           {([['today', Home, 'Today'], ['history', FileText, 'History'], ['reports', PieChart, 'Reports'], ['settings', Settings, 'Settings']] as const).map(([tab, Icon, label]) => <button key={tab} className={activeTab === tab ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab(tab)}><Icon aria-hidden="true" /><span>{label}</span></button>)}
         </nav>
       </div>
 
+      {quickMode && <QuickEntry drafts={quickReview} text={quickText} error={formError} isSaving={isSaving} onTextChange={setQuickText} onReview={reviewQuickEntry} onRemove={(id) => setQuickReview((current) => { const next = current?.filter((draft) => draft.id !== id) ?? null; return next?.length ? next : null })} onSave={saveQuickEntry} onClose={() => { setQuickMode(false); setQuickReview(null); setQuickText(''); setFormError('') }} />}
       {showForm && <ExpenseForm editing={editing} error={formError} isSaving={isSaving} onClose={() => { setShowForm(false); setEditing(null); setFormError('') }} onSave={saveExpense} />}
       {selectedDate && <DateDetails date={selectedDate} expenses={expenses.filter((expense) => expense.expenseDate === selectedDate)} onClose={() => setSelectedDate(null)} onEdit={openEdit} onDelete={requestDelete} />}
     </main>
@@ -378,7 +436,12 @@ function ExpenseForm({ editing, error, isSaving, onClose, onSave }: { editing: E
   return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="expense-title"><div className="modal-heading"><div><p className="eyebrow">{editing ? 'UPDATE ENTRY' : 'NEW ENTRY'}</p><h2 id="expense-title">{editing ? 'Edit expense' : 'Add expense'}</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X aria-hidden="true" /></button></div><form onSubmit={onSave} noValidate><label>Amount<div className="amount-input"><span>₹</span><input name="amount" type="number" min="0.01" step="0.01" defaultValue={editing?.amount} placeholder="0" inputMode="decimal" aria-invalid={Boolean(error)} autoFocus /></div></label><label>What did you spend it on?<input name="description" defaultValue={editing?.description} placeholder="e.g. Lunch, cab, groceries" aria-invalid={Boolean(error)} /></label><label>Category <span className="optional">Optional</span><select name="category" defaultValue={editing?.category ?? ''}><option value="">Choose a category</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<p className="date-note"><CalendarDays aria-hidden="true" /> {editing ? 'Recorded on ' : 'Automatically recorded for '}{new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${editing?.expenseDate ?? dateKey(new Date())}T12:00:00`))}</p><button className="save-button" type="submit" disabled={isSaving}><Check aria-hidden="true" /> {isSaving ? 'Saving…' : editing ? 'Save changes' : 'Save expense'}</button></form></section></div>
 }
 
-function DateDetails({ date, expenses, onClose, onEdit, onDelete }: { date: string; expenses: Expense[]; onClose: () => void; onEdit: (expense: Expense) => void; onDelete: (id: number) => void }) {
+function QuickEntry({ drafts, text, error, isSaving, onTextChange, onReview, onRemove, onSave, onClose }: { drafts: ExpenseDraft[] | null; text: string; error: string; isSaving: boolean; onTextChange: (text: string) => void; onReview: () => void; onRemove: (id: string) => void; onSave: () => void; onClose: () => void }) {
+  const total = drafts?.reduce((sum, draft) => sum + draft.amount, 0) ?? 0
+  return <div className="modal-backdrop"><section className="modal quick-modal" role="dialog" aria-modal="true" aria-labelledby="quick-title"><div className="modal-heading"><div><p className="eyebrow">FAST RECORDING</p><h2 id="quick-title">Quick entry</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X aria-hidden="true" /></button></div>{!drafts ? <form onSubmit={(event) => { event.preventDefault(); onReview() }}><label>Enter today&apos;s expenses<textarea value={text} onChange={(event) => onTextChange(event.target.value)} placeholder={'Lunch 250, Cab 180, Coffee 120'} rows={5} autoFocus aria-describedby="quick-help" /></label><p className="quick-help" id="quick-help">One expense per line or separate entries with commas. Use description followed by amount.</p>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-button" type="submit"><Check aria-hidden="true" /> Review expenses</button></form> : <><div className="review-heading"><h3>Review expenses</h3><span>{drafts.length} {drafts.length === 1 ? 'expense' : 'expenses'}</span></div><div className="review-list">{drafts.map((draft) => <div className="review-row" key={draft.id}><span>{draft.description}</span><strong>{currency(draft.amount)}</strong><button type="button" onClick={() => onRemove(draft.id)} aria-label={`Remove ${draft.description}`}><X aria-hidden="true" /></button></div>)}</div><div className="review-total"><span>Total</span><strong>{currency(total)}</strong></div><div className="confirm-actions"><button className="outline-button" type="button" onClick={onClose}>Cancel</button><button className="save-button" type="button" onClick={onSave} disabled={isSaving}><Check aria-hidden="true" /> {isSaving ? 'Saving…' : 'Save all'}</button></div></>}</section></div>
+}
+
+function DateDetails({ date, expenses, onClose, onEdit, onDelete }: { date: string; expenses: Expense[]; onClose: () => void; onEdit: (expense: Expense) => void; onDelete: (expense: Expense) => void }) {
   return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="date-title"><div className="modal-heading"><div><p className="eyebrow">EXPENSES</p><h2 id="date-title">{new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${date}T12:00:00`))}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden="true" /></button></div><ExpenseList expenses={expenses} onEdit={(expense) => { onClose(); onEdit(expense) }} onDelete={onDelete} /></section></div>
 }
 
