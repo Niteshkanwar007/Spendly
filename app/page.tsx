@@ -76,14 +76,56 @@ function getWeekDayTotals(expenses: Expense[], weekStart: Date) {
   })
 }
 
+function monthKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+function monthStart(key: string) {
+  const [year, month] = key.split('-').map(Number)
+  return new Date(year, month - 1, 1)
+}
+
+function monthLabel(key: string) {
+  return new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(monthStart(key))
+}
+
+function calculateMonthlyReport(expenses: Expense[], selectedKey: string, today: Date) {
+  const start = monthStart(selectedKey)
+  const nextStart = new Date(start.getFullYear(), start.getMonth() + 1, 1)
+  const isCurrent = selectedKey === monthKey(today)
+  const elapsedDays = isCurrent ? today.getDate() : new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()
+  const daysInMonth = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()
+  const items = expenses.filter((expense) => expense.expenseDate >= dateKey(start) && expense.expenseDate < dateKey(nextStart))
+  const total = items.reduce((sum, expense) => sum + expense.amount, 0)
+  const byCategory = new Map<string, number>()
+  items.forEach((expense) => {
+    const category = expense.category || 'Other'
+    byCategory.set(category, (byCategory.get(category) ?? 0) + expense.amount)
+  })
+  const categories = [...byCategory.entries()].map(([name, amount]) => ({ name, amount, percentage: total ? (amount / total) * 100 : 0 })).sort((a, b) => b.amount - a.amount)
+  const dayTotals = new Map<string, number>()
+  items.forEach((expense) => dayTotals.set(expense.expenseDate, (dayTotals.get(expense.expenseDate) ?? 0) + expense.amount))
+  const spendingDays = [...dayTotals.entries()].map(([key, amount]) => ({ date: new Date(`${key}T12:00:00`), amount })).sort((a, b) => b.amount - a.amount)
+  const previousKey = monthKey(new Date(start.getFullYear(), start.getMonth() - 1, 1))
+  return { items, total, categories, highestCategory: categories[0] ?? null, highestDay: spendingDays[0] ?? null, lowestDay: spendingDays.at(-1) ?? null, averageDaily: total / elapsedDays, projected: isCurrent ? (total / elapsedDays) * daysInMonth : null, previousKey, daysInMonth, isCurrent }
+}
+
+function monthComparison(currentTotal: number, previousTotal: number) {
+  if (previousTotal === 0) return null
+  const difference = currentTotal - previousTotal
+  return { difference, percentage: Math.abs((difference / previousTotal) * 100) }
+}
+
 export default function Page() {
   const [activeTab, setActiveTab] = useState<Tab>('today')
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Expense | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
-
   const today = new Date()
+  const currentMonthKey = monthKey(today)
+  const [selectedMonthKey, setSelectedMonthKey] = useState(currentMonthKey)
+
   const todayKey = dateKey(today)
   const todayStart = startOfDay(today)
   const tomorrowStart = addDays(todayStart, 1)
@@ -188,7 +230,7 @@ export default function Page() {
             </>
           )}
 
-          {activeTab === 'reports' && <WeeklyReport currentWeek={currentWeek} previousWeek={previousWeek} dailyAverage={dailyAverage} comparison={weekComparison} highestDay={highestDay} lowestDay={lowestDay} onAdd={() => setShowForm(true)} />}
+          {activeTab === 'reports' && <MonthlyReport expenses={expenses} selectedMonthKey={selectedMonthKey} currentMonthKey={currentMonthKey} today={today} onMonthChange={setSelectedMonthKey} onAdd={() => setShowForm(true)} />}
 
           {activeTab === 'settings' && <SettingsView />}
         </section>
@@ -223,6 +265,29 @@ function ExpenseForm({ editing, onClose, onSave }: { editing: Expense | null; on
 
 function DateDetails({ date, expenses, onClose, onEdit, onDelete }: { date: string; expenses: Expense[]; onClose: () => void; onEdit: (expense: Expense) => void; onDelete: (id: number) => void }) {
   return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="date-title"><div className="modal-heading"><div><p className="eyebrow">EXPENSES</p><h2 id="date-title">{new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${date}T12:00:00`))}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden="true" /></button></div><ExpenseList expenses={expenses} onEdit={(expense) => { onClose(); onEdit(expense) }} onDelete={onDelete} /></section></div>
+}
+
+function MonthlyReport({ expenses, selectedMonthKey, currentMonthKey, today, onMonthChange, onAdd }: { expenses: Expense[]; selectedMonthKey: string; currentMonthKey: string; today: Date; onMonthChange: (key: string) => void; onAdd: () => void }) {
+  const report = calculateMonthlyReport(expenses, selectedMonthKey, today)
+  const previous = calculateMonthlyReport(expenses, report.previousKey, today)
+  const comparison = monthComparison(report.total, previous.total)
+  const isEmpty = report.items.length === 0
+  const formatDay = (date: Date) => new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric' }).format(date)
+  const changeMonth = (offset: number) => {
+    const next = new Date(monthStart(selectedMonthKey).getFullYear(), monthStart(selectedMonthKey).getMonth() + offset, 1)
+    onMonthChange(monthKey(next))
+  }
+  return <div className="report-view">
+    <div className="page-heading"><p className="eyebrow">REPORTS</p><h2>{monthLabel(selectedMonthKey)}</h2><p className="subheading">A clear view of where your money went.</p></div>
+    <div className="month-nav" aria-label="Month navigation"><button className="month-nav-button" onClick={() => changeMonth(-1)} aria-label="Previous month"><ArrowLeft aria-hidden="true" /></button><button className="month-current" onClick={() => onMonthChange(currentMonthKey)}>{selectedMonthKey === currentMonthKey ? 'Current month' : 'Jump to current month'}</button><button className="month-nav-button" onClick={() => changeMonth(1)} disabled={selectedMonthKey >= currentMonthKey} aria-label="Next month"><ChevronRight aria-hidden="true" /></button></div>
+    <div className="report-total"><span>Total spending</span><strong>{currency(report.total)}</strong><small>{report.items.length} {report.items.length === 1 ? 'expense' : 'expenses'}</small></div>
+    {isEmpty ? <div className="report-empty compact"><h3>No expenses recorded</h3><p>There&apos;s no spending data for this month yet.</p><button className="outline-button" onClick={onAdd}><Plus aria-hidden="true" /> Add expense</button></div> : <>
+      <div className="report-metrics"><div><span>Daily average</span><strong>{currency(report.averageDaily)}</strong></div><div><span>Top category</span><strong>{report.highestCategory?.name ?? 'Other'}</strong></div><div><span>Projected spending</span><strong>{report.projected === null ? '—' : currency(report.projected)}</strong></div></div>
+      <div className="day-highlights"><div><span>Highest spending day</span><strong>{report.highestDay ? `${formatDay(report.highestDay.date)} · ${currency(report.highestDay.amount)}` : 'No spending yet'}</strong></div><div><span>Lowest spending day</span><strong>{report.lowestDay ? `${formatDay(report.lowestDay.date)} · ${currency(report.lowestDay.amount)}` : 'No spending yet'}</strong></div></div>
+      <section className="category-section"><div className="section-heading"><h3>Where your money went</h3><span>{report.categories.length} categories</span></div>{report.categories.map((category) => <div className="category-row" key={category.name}><div className="category-line"><strong>{category.name}</strong><span>{currency(category.amount)} · {category.percentage.toFixed(1)}%</span></div><div className="category-track"><div className="category-fill" style={{ width: `${category.percentage}%` }} /></div></div>)}</section>
+      <section className="comparison-section"><div className="section-heading"><h3>Compared with last month</h3></div><div className="comparison-card"><strong>{currency(previous.total)} last month</strong>{comparison ? <span>{currency(Math.abs(comparison.difference))} {comparison.difference >= 0 ? 'more' : 'less'} · {comparison.percentage.toFixed(1)}% {comparison.difference >= 0 ? 'increase' : 'decrease'}</span> : <span>No previous spending data</span>}</div></section>
+    </>}
+  </div>
 }
 
 function WeeklyReport({ currentWeek, previousWeek, dailyAverage, comparison, highestDay, lowestDay, onAdd }: { currentWeek: ReturnType<typeof calculatePeriod>; previousWeek: ReturnType<typeof calculatePeriod>; dailyAverage: number; comparison: ReturnType<typeof compareWeeks>; highestDay: { date: Date; total: number } | null; lowestDay: { date: Date; total: number } | null; onAdd: () => void }) {
