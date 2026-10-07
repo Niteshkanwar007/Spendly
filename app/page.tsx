@@ -116,6 +116,44 @@ function monthComparison(currentTotal: number, previousTotal: number) {
   return { difference, percentage: Math.abs((difference / previousTotal) * 100) }
 }
 
+type InsightOpportunity = { name: string; amount: number; reduction: number; saving: number; reason: string }
+
+function normalizedDescription(description: string) {
+  return description.trim().toLocaleLowerCase()
+}
+
+function calculateInsights(report: ReturnType<typeof calculateMonthlyReport>, previous: ReturnType<typeof calculateMonthlyReport>) {
+  const categoryMap = new Map(previous.categories.map((category) => [category.name, category.amount]))
+  const categoryChanges = report.categories.flatMap((category) => {
+    const previousAmount = categoryMap.get(category.name) ?? 0
+    if (!previousAmount) return []
+    const change = ((category.amount - previousAmount) / previousAmount) * 100
+    if (change >= 20) return [{ type: 'increase' as const, name: category.name, amount: category.amount - previousAmount, percentage: change }]
+    if (change <= -20) return [{ type: 'decrease' as const, name: category.name, amount: previousAmount - category.amount, percentage: Math.abs(change) }]
+    return []
+  })
+  const descriptions = new Map<string, { name: string; items: Expense[] }>()
+  report.items.forEach((item) => {
+    const key = normalizedDescription(item.description)
+    const group = descriptions.get(key) ?? { name: item.description.trim(), items: [] }
+    group.items.push(item)
+    descriptions.set(key, group)
+  })
+  const repeated = [...descriptions.values()].filter((group) => group.items.length >= 4).map((group) => ({ ...group, total: group.items.reduce((sum, item) => sum + item.amount, 0), average: group.items.reduce((sum, item) => sum + item.amount, 0) / group.items.length })).sort((a, b) => b.total - a.total)
+  const opportunities: InsightOpportunity[] = []
+  if (report.highestCategory) opportunities.push({ name: report.highestCategory.name, amount: report.highestCategory.amount, reduction: 20, saving: report.highestCategory.amount * 0.2, reason: 'highest spending category' })
+  report.categories.slice(1, 3).forEach((category) => opportunities.push({ name: category.name, amount: category.amount, reduction: 15, saving: category.amount * 0.15, reason: 'another meaningful category' }))
+  repeated.slice(0, 2).forEach((group) => opportunities.push({ name: group.name, amount: group.total, reduction: 30, saving: group.total * 0.3, reason: `${group.items.length} repeated purchases` }))
+  const dailyAverage = report.averageDaily
+  const highDayRatio = report.highestDay && dailyAverage ? report.highestDay.amount / dailyAverage : 0
+  const weekend = report.items.filter((item) => [0, 6].includes(new Date(`${item.expenseDate}T12:00:00`).getDay())).reduce((sum, item) => sum + item.amount, 0)
+  const weekdays = report.items.filter((item) => ![0, 6].includes(new Date(`${item.expenseDate}T12:00:00`).getDay())).reduce((sum, item) => sum + item.amount, 0)
+  const weekendDays = new Set(report.items.filter((item) => [0, 6].includes(new Date(`${item.expenseDate}T12:00:00`).getDay())).map((item) => item.expenseDate)).size
+  const weekdayDays = new Set(report.items.filter((item) => ![0, 6].includes(new Date(`${item.expenseDate}T12:00:00`).getDay())).map((item) => item.expenseDate)).size
+  const smallAccumulation = repeated.find((group) => group.items.length >= 5 && report.total > 0 && group.total >= report.total * 0.05)
+  return { categoryChanges, repeated, opportunities: opportunities.sort((a, b) => b.saving - a.saving).slice(0, 3), highDayRatio, weekendAverage: weekendDays ? weekend / weekendDays : 0, weekdayAverage: weekdayDays ? weekdays / weekdayDays : 0, smallAccumulation }
+}
+
 export default function Page() {
   const [activeTab, setActiveTab] = useState<Tab>('today')
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses)
@@ -271,12 +309,10 @@ function MonthlyReport({ expenses, selectedMonthKey, currentMonthKey, today, onM
   const report = calculateMonthlyReport(expenses, selectedMonthKey, today)
   const previous = calculateMonthlyReport(expenses, report.previousKey, today)
   const comparison = monthComparison(report.total, previous.total)
+  const insights = calculateInsights(report, previous)
   const isEmpty = report.items.length === 0
   const formatDay = (date: Date) => new Intl.DateTimeFormat('en-IN', { month: 'long', day: 'numeric' }).format(date)
-  const changeMonth = (offset: number) => {
-    const next = new Date(monthStart(selectedMonthKey).getFullYear(), monthStart(selectedMonthKey).getMonth() + offset, 1)
-    onMonthChange(monthKey(next))
-  }
+  const changeMonth = (offset: number) => onMonthChange(monthKey(new Date(monthStart(selectedMonthKey).getFullYear(), monthStart(selectedMonthKey).getMonth() + offset, 1)))
   return <div className="report-view">
     <div className="page-heading"><p className="eyebrow">REPORTS</p><h2>{monthLabel(selectedMonthKey)}</h2><p className="subheading">A clear view of where your money went.</p></div>
     <div className="month-nav" aria-label="Month navigation"><button className="month-nav-button" onClick={() => changeMonth(-1)} aria-label="Previous month"><ArrowLeft aria-hidden="true" /></button><button className="month-current" onClick={() => onMonthChange(currentMonthKey)}>{selectedMonthKey === currentMonthKey ? 'Current month' : 'Jump to current month'}</button><button className="month-nav-button" onClick={() => changeMonth(1)} disabled={selectedMonthKey >= currentMonthKey} aria-label="Next month"><ChevronRight aria-hidden="true" /></button></div>
@@ -286,6 +322,8 @@ function MonthlyReport({ expenses, selectedMonthKey, currentMonthKey, today, onM
       <div className="day-highlights"><div><span>Highest spending day</span><strong>{report.highestDay ? `${formatDay(report.highestDay.date)} · ${currency(report.highestDay.amount)}` : 'No spending yet'}</strong></div><div><span>Lowest spending day</span><strong>{report.lowestDay ? `${formatDay(report.lowestDay.date)} · ${currency(report.lowestDay.amount)}` : 'No spending yet'}</strong></div></div>
       <section className="category-section"><div className="section-heading"><h3>Where your money went</h3><span>{report.categories.length} categories</span></div>{report.categories.map((category) => <div className="category-row" key={category.name}><div className="category-line"><strong>{category.name}</strong><span>{currency(category.amount)} · {category.percentage.toFixed(1)}%</span></div><div className="category-track"><div className="category-fill" style={{ width: `${category.percentage}%` }} /></div></div>)}</section>
       <section className="comparison-section"><div className="section-heading"><h3>Compared with last month</h3></div><div className="comparison-card"><strong>{currency(previous.total)} last month</strong>{comparison ? <span>{currency(Math.abs(comparison.difference))} {comparison.difference >= 0 ? 'more' : 'less'} · {comparison.percentage.toFixed(1)}% {comparison.difference >= 0 ? 'increase' : 'decrease'}</span> : <span>No previous spending data</span>}</div></section>
+      <section className="insights-section"><div className="section-heading"><h3>Where You Could Save</h3><span>Scenario estimates</span></div><p className="insight-note">These are mathematical projections based on your recorded spending, not guaranteed savings.</p>{insights.opportunities.map((opportunity, index) => <article className="opportunity-card" key={`${opportunity.name}-${opportunity.reduction}`}><div className="opportunity-rank">{index + 1}</div><div className="opportunity-copy"><strong>{opportunity.name}</strong><span>{opportunity.reason} · {currency(opportunity.amount)}</span><div className="opportunity-grid"><div><small>Reduction assumption</small><b>{opportunity.reduction}%</b></div><div><small>Potential / month</small><b>{currency(opportunity.saving)}</b></div><div><small>Potential / year</small><b>{currency(opportunity.saving * 12)}</b></div></div></div></article>)}{insights.opportunities[0] && <p className="insight-callout">At a {insights.opportunities[0].reduction}% reduction, {insights.opportunities[0].name} could save approximately {currency(insights.opportunities[0].saving)} this month.</p>}</section>
+      <section className="observations-section"><div className="section-heading"><h3>Spending observations</h3></div>{report.highestCategory && <p><strong>{report.highestCategory.name}</strong> was your highest spending category at {currency(report.highestCategory.amount)} ({report.highestCategory.percentage.toFixed(1)}%).</p>}{report.categories[1] && <p>Your second-largest spending category was <strong>{report.categories[1].name}</strong> at {currency(report.categories[1].amount)}.</p>}{insights.categoryChanges.map((change) => <p key={`${change.type}-${change.name}`}>{change.name} spending {change.type === 'increase' ? 'increased' : 'decreased'} by {change.percentage.toFixed(0)}% compared with last month ({currency(change.amount)} {change.type === 'increase' ? 'more' : 'less'}).</p>)}{insights.repeated.map((group) => <p key={`repeat-${group.name}`}>{group.name} was recorded {group.items.length} times this month, totaling {currency(group.total)}. Average: {currency(group.average)}.</p>)}{report.highestDay && insights.highDayRatio >= 2 && <p>{formatDay(report.highestDay.date)} was your highest spending day: {currency(report.highestDay.amount)}, approximately {insights.highDayRatio.toFixed(1)}× your monthly daily average.</p>}{insights.weekendAverage > insights.weekdayAverage && insights.weekdayAverage > 0 && <p>Your average weekend spending was higher than your weekday spending. Weekend: {currency(insights.weekendAverage)}/day · Weekday: {currency(insights.weekdayAverage)}/day.</p>}{insights.smallAccumulation && <p>Small {insights.smallAccumulation.name} purchases added up to {currency(insights.smallAccumulation.total)} this month.</p>}</section>
     </>}
   </div>
 }
