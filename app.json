@@ -5,6 +5,9 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.anonymous.myapp"
+    },
     "splash": {
       "resizeMode": "contain",
       "backgroundColor": "#f7f6f2"
