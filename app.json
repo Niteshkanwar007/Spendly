@@ -5,6 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "owner": "nnick-dev",
     "extra": {
       "eas": {
         "projectId": "cc388ad7-cb10-4370-b817-918462429b51"
