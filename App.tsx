@@ -1,9 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Alert, TouchableOpacity, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
 
 type Tab = 'today' | 'history' | 'reports' | 'settings'
 type Expense = { id: number; amount: number; description: string; category: string; date: string }
+
+const EXPENSES_STORAGE_KEY = '@spendly/expenses'
+const REMINDERS_STORAGE_KEY = '@spendly/reminders'
 
 const categories = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Health', 'Travel', 'Other']
 const initialExpenses: Expense[] = []
@@ -15,13 +19,66 @@ export default function App() {
   const today = new Date()
   const todayKey = dateKey(today)
   const [tab, setTab] = useState<Tab>('today')
-  const [expenses, setExpenses] = useState(initialExpenses)
+  const [expenses, setExpenses] = useState<Expense[]>(initialExpenses)
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
   const [category, setCategory] = useState('Food')
   const [quickEntry, setQuickEntry] = useState(false)
   const [quickText, setQuickText] = useState('')
   const [reminders, setReminders] = useState(true)
+  const [storageReady, setStorageReady] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+
+    const loadStoredData = async () => {
+      try {
+        const [storedExpenses, storedReminders] = await Promise.all([
+          AsyncStorage.getItem(EXPENSES_STORAGE_KEY),
+          AsyncStorage.getItem(REMINDERS_STORAGE_KEY),
+        ])
+
+        if (!mounted) return
+
+        if (storedExpenses) {
+          const parsedExpenses = JSON.parse(storedExpenses)
+          if (Array.isArray(parsedExpenses)) {
+            setExpenses(parsedExpenses)
+          }
+        }
+
+        if (storedReminders !== null) {
+          setReminders(storedReminders === 'true')
+        }
+      } catch {
+        Alert.alert('Storage error', 'Saved expenses could not be loaded. Your existing entries have not been changed.')
+      } finally {
+        if (mounted) setStorageReady(true)
+      }
+    }
+
+    loadStoredData()
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!storageReady) return
+
+    AsyncStorage.setItem(EXPENSES_STORAGE_KEY, JSON.stringify(expenses)).catch(() => {
+      Alert.alert('Storage error', 'Your latest expense could not be saved locally.')
+    })
+  }, [expenses, storageReady])
+
+  useEffect(() => {
+    if (!storageReady) return
+
+    AsyncStorage.setItem(REMINDERS_STORAGE_KEY, String(reminders)).catch(() => {
+      Alert.alert('Storage error', 'Your reminder setting could not be saved locally.')
+    })
+  }, [reminders, storageReady])
 
   const todayExpenses = expenses.filter((expense) => expense.date === todayKey)
   const total = todayExpenses.reduce((sum, expense) => sum + expense.amount, 0)
