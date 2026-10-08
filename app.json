@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Spendly",
-    "slug": "spendly-expo",
+    "slug": "spendly",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
