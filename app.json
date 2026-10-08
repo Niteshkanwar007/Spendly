@@ -4,19 +4,29 @@
     "slug": "spendly",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "owner": "nnick-dev",
+    "icon": "./dist/apple-icon.png",
+    "backgroundColor": "#07090D",
+    "primaryColor": "#8B5CF6",
     "extra": {
       "eas": {
         "projectId": "ed04d1df-f447-4ef0-8180-f80bbc4004ac"
       }
     },
     "android": {
-      "package": "com.anonymous.myapp"
+      "package": "com.anonymous.myapp",
+      "icon": "./dist/apple-icon.png"
     },
     "splash": {
       "resizeMode": "contain",
-      "backgroundColor": "#f7f6f2"
+      "backgroundColor": "#07090D"
+    },
+    "web": {
+      "favicon": "./public/icon.svg",
+      "name": "Spendly",
+      "shortName": "Spendly",
+      "themeColor": "#07090D"
     },
     "assetBundlePatterns": ["**/*"]
   }
